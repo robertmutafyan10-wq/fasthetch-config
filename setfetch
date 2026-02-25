@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Your images folder (exactly as you said: no "h")
+DEFAULT_FOLDER="/home/robert/.config/fastfetc"
+
+# Where fastfetch reads the active logo from
+CFG_DIR="$HOME/.config/fastfetch"
+LOGO_PNG="$CFG_DIR/logo.png"
+CACHE_DIR="$HOME/.cache/fastfetch"
+CONFIG_FILE="$CFG_DIR/config.jsonc"
+
+die() { echo "Error: $*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+usage() {
+  cat <<EOF
+Usage:
+  setfetch /path/to/image        Set specific image (converted to PNG)
+  setfetch random                Random image from: $DEFAULT_FOLDER
+  setfetch random /path/folder   Random image from a folder
+  setfetch clean                 Switch back to Arch ASCII
+EOF
+}
+
+ensure_magick() {
+  have magick || die "imagemagick not found. Install: sudo pacman -S imagemagick"
+}
+
+ensure_config_dir() {
+  mkdir -p "$CFG_DIR"
+}
+
+set_logo_from_file() {
+  local input="$1"
+  [ -f "$input" ] || die "File not found: $input"
+
+  ensure_magick
+  ensure_config_dir
+
+  # Convert to PNG (reliable decoding) + auto orientation
+  magick "$input" -auto-orient -resize 900x900\> "$LOGO_PNG"
+
+  # Clear cache so the image refreshes
+  rm -rf "$CACHE_DIR"
+
+  fastfetch
+}
+
+pick_random() {
+  local folder="${1:-$DEFAULT_FOLDER}"
+  [ -d "$folder" ] || die "Folder not found: $folder"
+
+  mapfile -t files < <(find "$folder" -type f \( \
+      -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.webp' \
+    \) 2>/dev/null)
+
+  [ "${#files[@]}" -gt 0 ] || die "No images found in: $folder"
+
+  local idx=$(( RANDOM % ${#files[@]} ))
+  set_logo_from_file "${files[$idx]}"
+}
+
+clean_ascii() {
+  [ -f "$CONFIG_FILE" ] || die "Missing config: $CONFIG_FILE"
+
+  python3 - <<'PY'
+import re, pathlib
+cfg = pathlib.Path.home()/".config/fastfetch/config.jsonc"
+txt = cfg.read_text(encoding="utf-8")
+
+new_logo = '"logo": {\n    "type": "builtin",\n    "source": "arch"\n  }'
+txt2, n = re.subn(r'"logo"\s*:\s*\{.*?\}\s*,?', new_logo + ",", txt, flags=re.S)
+
+if n == 0:
+    if '"$schema"' in txt:
+        txt2 = re.sub(r'(\{\s*"\\$schema"\s*:\s*".*?"\s*,)', r'\1\n  ' + new_logo + ',', txt, flags=re.S)
+    else:
+        txt2 = '{\n  ' + new_logo + ',\n' + txt.lstrip('{').lstrip()
+
+cfg.write_text(txt2, encoding="utf-8")
+print("Switched to ASCII arch logo.")
+PY
+
+  rm -rf "$CACHE_DIR"
+  fastfetch
+}
+
+main() {
+  [ $# -ge 1 ] || { usage; exit 1; }
+
+  case "$1" in
+    -h|--help) usage ;;
+    random)
+      if [ $# -ge 2 ]; then
+        pick_random "$2"
+      else
+        pick_random
+      fi
+      ;;
+    clean) clean_ascii ;;
+    *) set_logo_from_file "$1" ;;
+  esac
+}
+
+main "$@"
